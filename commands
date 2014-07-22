@@ -24,21 +24,32 @@ if [[ $1 == elasticsearch:* ]]; then
     CONTAINER_NAME="${PLUGIN_NAME}_${APP}"
     HOST_DIR="$DOKKU_ROOT/$APP/$PLUGIN_NAME"
     ENVVAR_NAME="ELASTICSEARCH_URL"
+    VOLUME="$HOST_DIR:/var/lib/elasticsearch"
+
+    IMAGE_NAME="jezdez/elasticsearch"
+    IMAGE=$(docker images | grep "$IMAGE_NAME" | awk '{print $3}')
+    ID=$(docker ps -a | grep "$CONTAINER_NAME" | awk '{print $1}')
+    RUNNING_ID=$(docker ps | grep "$CONTAINER_NAME" | awk '{print $1}')
 fi
 
-case "$1" in
-  elasticsearch:create)
+function stop_container {
+  docker stop $ID > /dev/null
+}
+
+function check_image {
     # Check if Elasticsearch container is installed
-    IMAGE=$(docker images | grep "jezdez/elasticsearch" | awk '{print $3}')
     if [[ -z $IMAGE ]]; then
         echo "Elasticsearch image not found... Did you run 'dokku plugins-install' ?"
         exit 1
     fi
+}
 
+case "$1" in
+  elasticsearch:create)
+    check_image
     # Stop existing container with the same persistent Elasticsearch
-    ID=$(docker ps | grep "$CONTAINER_NAME" | awk '{print $1}')
     if [[ ! -z "$ID" ]]; then
-        docker stop $ID > /dev/null
+        stop_container
     fi
 
     # Check if an existing DB volume exists
@@ -48,11 +59,9 @@ case "$1" in
         mkdir -p $HOST_DIR
         chown -R dokku:dokku $HOST_DIR
     fi
-    VOLUME="$HOST_DIR:/var/lib/elasticsearch"
 
-    # Launch container
-    docker run -v $VOLUME -name=$CONTAINER_NAME -d jezdez/elasticsearch \
-        /usr/local/bin/run
+    # Run Elasticsearch in a new container
+    docker run -v $VOLUME --name=$CONTAINER_NAME -d $IMAGE_NAME /usr/local/bin/run
 
     # Link to a potential existing app
     dokku elasticsearch:link $APP $APP
@@ -63,9 +72,8 @@ case "$1" in
 
   elasticsearch:delete)
     # Stop the container
-    ID=$(docker ps -a | grep "$CONTAINER_NAME" |  awk '{print $1}')
     if [[ ! -z $ID ]]; then
-        docker stop $ID > /dev/null
+        stop_container
         docker rm $ID  > /dev/null
     fi
     # Remove persistent volume
@@ -80,7 +88,6 @@ case "$1" in
     ;;
 
   elasticsearch:info)
-    ID=$(docker ps -a | grep "$CONTAINER_NAME" | awk '{print $1}')
     IP=$(docker inspect $ID | grep IPAddress | cut -d '"' -f 4)
     echo
     echo "       Host: ${IP}"
@@ -101,7 +108,6 @@ case "$1" in
         dokku link:create "$APP" "$CONTAINER_NAME" "$PLUGIN_NAME"
 
         # figure out IP to set env var
-        ID=$(docker ps -a | grep "$CONTAINER_NAME" | awk '{print $1}')
         IP=$(docker inspect $ID | grep IPAddress | cut -d '"' -f 4)
         dokku config:set "$APP" $ENVVAR_NAME="http://${IP}:9200"
         echo "-----> $APP linked to $CONTAINER_NAME container"
@@ -109,8 +115,24 @@ case "$1" in
     ;;
 
   elasticsearch:logs)
-    ID=$(docker ps -a | grep "$CONTAINER_NAME" |  awk '{print $1}')
     docker logs $ID | tail -n 100
+    ;;
+
+  elasticsearch:start)
+    if [[ "$RUNNING_ID" != "" ]]; then
+      echo "Elasticsearch container already running with ID: ${RUNNING_ID}"
+      exit 1
+    fi
+    docker start $ID
+    ;;
+
+  elasticsearch:stop)
+    check_container
+    if [[ -z "$RUNNING_ID" ]]; then
+      echo "Elasticsearch container is not running"
+      exit 1
+    fi
+    stop_container
     ;;
 
   help)
@@ -120,6 +142,8 @@ case "$1" in
     elasticsearch:info <app>                                Display container informations
     elasticsearch:link <app> <container>                    Link an app to a Elasticsearch container
     elasticsearch:logs <app>                                Display last logs from Elasticsearch container
+    elasticsearch:start <app>                               Start Elasticsearch container
+    elasticsearch:stop <app>                                Stop Elasticsearch container
 EOF
     ;;
 
